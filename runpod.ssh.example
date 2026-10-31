@@ -1,0 +1,14 @@
+# Copy to runpod.ssh. Use the IP and exposed TCP SSH port shown by Runpod.
+IgnoreUnknown UseKeychain
+Host runpod-cuda
+    HostName REPLACE_WITH_RUNPOD_IP
+    Port 22
+    User root
+    IdentityFile REPLACE_WITH_SSH_PRIVATE_KEY_PATH
+    IdentitiesOnly yes
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+
+# Project values come first: OpenSSH uses the first value it reads.
+Host *
+    Include ~/.ssh/config
