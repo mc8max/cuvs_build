@@ -13,12 +13,16 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 _plan_spec = importlib.util.spec_from_file_location('cuvs_native_test_plan', ROOT / 'scripts/test_plan.py')
 _plan_module = importlib.util.module_from_spec(_plan_spec)
 _plan_spec.loader.exec_module(_plan_module)
 create_plan, check_headers = _plan_module.create_plan, _plan_module.check_headers
+_cache_spec = importlib.util.spec_from_file_location('cuvs_library_cache', ROOT / 'scripts/library_cache.py')
+_cache_module = importlib.util.module_from_spec(_cache_spec)
+_cache_spec.loader.exec_module(_cache_module)
 
 
 def load_config(path):
@@ -425,6 +429,25 @@ class Workflow:
         if required and version(required) > version(fresh['glibc']['output']):
             raise ValueError(f'Bundle requires glibc {required}; remote system is older.')
         destination = f'{self.remote_root()}/releases/{release}'
+        cache = self.config.get('library_cache')
+        prepared = None
+        if cache:
+            libraries = _cache_module.library_files(manifest)
+            seed = None
+            if (self.state / 'published-release').exists():
+                seed = f"{self.remote_root()}/releases/{self.release('published-release')}"
+            prepared = self.library_cache('prepare', manifest, seed=seed)
+            objects = {entry['sha256']: name for name, entry in libraries.items()}
+            print(f"Library cache: reuse {prepared['reused_bytes']:,} bytes; "
+                  f"upload {prepared['upload_bytes']:,} bytes ({len(prepared['missing'])} objects)")
+            if prepared['missing']:
+                # Dereference temporary aliases during transfer; do not copy gigabytes locally.
+                with tempfile.TemporaryDirectory(prefix='library-upload-', dir=self.state) as staging:
+                    for key in prepared['missing']:
+                        (Path(staging) / key).symlink_to(bundle / objects[key])
+                    run(['rsync', '-azL', '--no-owner', '--no-group', '--protect-args',
+                         '--partial-dir=.rsync-partial', '--info=stats2', '-e', shlex.join(self.ssh()),
+                         staging + '/', self.config['ssh']['host'] + ':' + prepared['incoming'] + '/'])
         self.remote(['mkdir', '-p', destination])
         reuse = []
         if (self.state / 'published-release').exists():
@@ -434,8 +457,11 @@ class Workflow:
         # Relocating an ELF can change bytes without changing size or preserved
         # mtime; compare contents before reusing an older release's hardlink.
         run(['rsync', '-azH', '--checksum', '--no-owner', '--no-group', '--protect-args', '--partial-dir=.rsync-partial',
-             '--info=stats2', '-e', shlex.join(self.ssh())] + reuse + [str(bundle) + '/',
+             '--info=stats2', '-e', shlex.join(self.ssh())] + reuse +
+            (['--exclude=/lib/***'] if cache else []) + [str(bundle) + '/',
              self.config['ssh']['host'] + ':' + destination + '/'])
+        if prepared:
+            self.library_cache('assemble', manifest, destination=destination, incoming=prepared['incoming'])
         self.remote(['python3', '-c', '''import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 manifest = json.loads((root / "manifest.json").read_text())
@@ -455,6 +481,13 @@ print(f"Verified {len(manifest['files'])} bundled files")
         # Record a release only after upload and runtime loader validation succeed.
         (self.state / 'published-release').write_text(release + '\n')
         print(f'Published {destination}')
+
+    def library_cache(self, action, manifest, **kwargs):
+        request = {'config': self.config['library_cache'], 'manifest': manifest, **kwargs}
+        result = self.remote(['python3', '-', action, json.dumps(request)],
+                             input=Path(_cache_module.__file__).read_text(),
+                             text=True, stdout=subprocess.PIPE)
+        return json.loads(result.stdout)
 
     def execute_remote(self, mode):
         release = self.release('published-release')
@@ -500,6 +533,10 @@ def main():
     parser.add_argument('command', choices=['inventory', 'doctor', 'setup', 'configure', 'build',
                                            'package', 'publish', 'test', 'benchmark', 'fetch', 'cycle', 'ssh', 'smoke'])
     args = parser.parse_args()
+    if args.command in ('setup', 'doctor', 'configure', 'build', 'package', 'smoke'):
+        if platform.system() != 'Linux' or platform.machine() != 'x86_64':
+            raise ValueError('Native compilation requires Linux x86_64. Use make ' +
+                             args.command + ' to run this step in the Docker builder.')
     flow = Workflow(args.config)
     if args.command == 'setup':
         flow.target()

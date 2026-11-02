@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import bundle
+import library_cache
 
 
 @unittest.skipUnless(shutil.which("gcc") and shutil.which("readelf") and shutil.which("patchelf"),
@@ -77,6 +78,27 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Unresolved dependency libfixture.so.1"):
             self.package()
         self.assertEqual(previous, (self.args.output / "manifest.json").read_bytes())
+
+    def test_cached_libraries_execute_with_origin_rpaths_without_original_bundle(self):
+        self.package()
+        output = self.args.output
+        manifest = json.loads((output / 'manifest.json').read_text())
+        config = {'mount': str(self.root), 'path': str(self.root / 'network-volume/cache')}
+        with patch.object(library_cache.os.path, 'ismount', return_value=True):
+            prepared = library_cache.prepare(config, manifest)
+            libraries = library_cache.library_files(manifest)
+            sources = {entry['sha256']: output / name for name, entry in libraries.items()}
+            for key in prepared['missing']:
+                shutil.copy2(sources[key], Path(prepared['incoming']) / key)
+            remote = self.root / 'remote-release'
+            shutil.copytree(output, remote, ignore=shutil.ignore_patterns('lib'))
+            library_cache.assemble(config, manifest, remote, prepared['incoming'])
+        shutil.rmtree(output)
+        shutil.rmtree(self.prefix)
+        shutil.rmtree(self.build)
+        subprocess.run([str(remote / 'run'), 'SMOKE_TEST'], cwd='/', check=True)
+        for name, entry in manifest['files'].items():
+            self.assertEqual(bundle.digest(remote / name), entry['sha256'])
 
     def test_refuses_unowned_output_and_driver_stubs(self):
         self.args.output.mkdir()

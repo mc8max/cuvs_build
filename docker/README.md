@@ -33,3 +33,26 @@ exit code `0` means success. For live output:
 ```sh
 docker logs --follow CONTAINER
 ```
+
+## Complete development cycle on macOS
+
+The regular `make build`, `make package`, `make publish`, and `make cycle`
+commands automatically use the builder on macOS and ARM hosts. Run
+`make inventory` once to collect remote GPU information, then `make cycle`.
+`make check` also uses the image so its ELF and GNU rsync checks run on Linux.
+Use `DOCKER_JOBS=2` to limit compiler parallelism, or `DOCKER_IMAGE=TAG` to select
+another compatible builder image. The full cycle always waits for compilation.
+
+These commands share `.state/` across containers and write local bundles into
+`artifacts/` and downloaded reports into `results/`. The source checkout is read
+only except for its dedicated `cpp/build-runpod` directory. The host `.conda-env`
+is not used or created. The launcher refuses to start while a detached build or
+another workflow step is running.
+
+Remote steps mount `runpod.ssh` and `~/.ssh` read only, preserving Includes and
+absolute identity paths. Docker Desktop's SSH agent socket is forwarded when
+the host has `SSH_AUTH_SOCK`; unlock passphrase-protected keys with `ssh-add`
+before running the cycle. Credentials are not mounted for build/package steps,
+copied into the image, or included in bundles. Keep the pod hostname, port, and
+identity settings in the usual host SSH configuration. `make ssh` opens the
+host's interactive SSH client.

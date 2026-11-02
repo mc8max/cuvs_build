@@ -1,101 +1,53 @@
 # cuVS build and RunPod workflow
 
-`cuvs_build` is a utility project for developing cuVS when your local machine
-lacks suitable GPU resources and you need a remote GPU provider such as RunPod.
-It compiles cuVS locally, uploads the programs and required libraries, then runs
-tests and a small benchmark on the remote GPU. Logs and results are downloaded
-for review. The cuVS source stays in its own checkout, with a dedicated build
-folder for this workflow.
-
-## Where things run
-
-```mermaid
-flowchart LR
-    subgraph local["Local machine · CPU"]
-        source["cuVS source"] --> build["Compile and package"]
-        results["Local results/"]
-    end
-    subgraph remote["RunPod · GPU"]
-        run["Run tests and benchmark"]
-    end
-    build -->|"Upload binaries and libraries over SSH"| run
-    run -->|"Download logs and results"| results
-```
-
-A local GPU is not required. RunPod executes the programs compiled locally.
-
-On macOS, set `CUVS_SOURCE_DIR` in `.env` and build with Docker:
-
-```sh
-make docker-build DOCKER_DETACH=1
-```
-
-The build uses saved GPU inventory and can run while the pod is stopped.
-Without inventory, specify the GPU architecture, such as
-`DOCKER_ARCHITECTURES=120-real` for Blackwell.
-
-The default configuration selects quick smoke tests. Add
-`CONFIG=config/build-all-native.json` for the full test profile.
-See the [Docker workflow](docker/README.md) for setup, logs, and build options.
-The commands below use native Linux; Docker publishing and cycle integration
-remain separate follow-up work.
+Build cuVS locally, run tests and a smoke benchmark on RunPod, and download
+results. No local GPU is required. The cuVS checkout uses a dedicated
+`cpp/build-runpod` directory.
 
 ## Setup
 
-Both machines must run Linux x86_64. Locally, you need Python 3, Conda, Make,
-SSH, and rsync. RunPod needs an NVIDIA GPU and driver.
-
-On a new checkout, create your local configuration files:
+- **macOS / ARM:** Python 3, Make, Docker, and the [builder image](docker/README.md).
+  Make commands automatically use Linux amd64 Docker.
+- **Linux x86_64:** Python 3, Conda, Make, SSH, and GNU rsync.
+- **RunPod:** Linux x86_64 with an NVIDIA GPU, driver, Python 3, and rsync.
 
 ```sh
 cp .env.example .env
 cp runpod.ssh.example runpod.ssh
 ```
 
-| File | What to set |
-| --- | --- |
-| `.env` | Set `CUVS_SOURCE_DIR` to your local cuVS checkout. Loaded automatically and ignored by Git. |
-| `runpod.ssh` | Set the pod address, SSH port, and key. Also ignored by Git. |
-| `config/build.json` | Choose build paths, compiler versions, build jobs, targets, and test options. |
-
-Relative paths start from this repository. Configuration uses
-`${CUVS_SOURCE_DIR}` to find the checkout. Build output goes into its dedicated
-`cpp/build-runpod` folder by default.
-
-If your SSH key has a passphrase, unlock it with `ssh-add`. Then prepare the
-environment and configure the build:
+Set `CUVS_SOURCE_DIR` in `.env` and the pod address, port, and identity in
+`runpod.ssh`. Unlock passphrase-protected keys with `ssh-add`, then run:
 
 ```sh
 make setup
-```
-
-This also inspects RunPod and saves its hardware information in
-`config/runpod.json`.
-
-## Development cycle
-
-After editing cuVS, run the complete cycle from this directory:
-
-```sh
 make cycle
 ```
 
-The cycle is **build → package → upload → test → benchmark → download results**.
-Review the reports in `results/`, update your code, and repeat.
+## Development
 
-To run individual steps:
+After editing cuVS, run `make cycle`:
+**build → package → upload → test → benchmark → download results**.
+Reports are saved in `results/`.
 
-| Command | What it does |
+| Command | Purpose |
 | --- | --- |
-| `make build` | Compile the selected libraries, tests, and benchmark locally. |
-| `make docker-build` | Compile the selected targets in Linux Docker. |
-| `make publish` | Build, package, and upload a new release to RunPod. |
-| `make test` | Run native C++ and C API tests from the last published release. |
-| `make benchmark` | Run the small benchmark from the last published release. |
-| `make fetch` | Download logs and reports into `results/`. |
-| `make smoke` | Check local compilation and remote GPU execution with a tiny program. |
-| `make check` | Run local checks for this workflow without SSH or a GPU. |
+| `make build` | Compile selected targets. |
+| `make publish` | Build, package, and upload. |
+| `make test` / `make benchmark` | Run the last published release. |
+| `make fetch` | Download reports. |
+| `make inventory` | Refresh hardware information after changing pods. |
+| `make check` | Check the workflow without SSH or a GPU. |
+| `make help` | Show all commands. |
 
-When changing pods, run `make inventory` to refresh hardware information.
-Use `make configure` to refresh the build configuration, `make ssh` to open a
-remote shell, and `make help` for the full command list.
+Edit `config/build.json` for build and test settings. The default runs quick
+smoke tests; use `make cycle CONFIG=config/build-all-native.json` for the full
+profile. See [Docker options and logs](docker/README.md) for detached builds
+and compiler job limits.
+
+## Library cache
+
+Attach a network volume at `/workspace`. Libraries are reused from
+`/workspace/cuvs-library-cache`; only missing or changed content is uploaded.
+Keep this cache when removing old releases, and attach the same volume to
+replacement pods. See [cache configuration and maintenance](docs/library-cache.md).

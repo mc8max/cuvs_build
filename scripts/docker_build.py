@@ -3,6 +3,7 @@
 
 import argparse
 import datetime
+import fcntl
 import hashlib
 import json
 from pathlib import Path
@@ -18,7 +19,7 @@ def docker(args, **kwargs):
     return subprocess.run(['docker', *map(str, args)], check=True, text=True, **kwargs)
 
 
-def prepare(config, image_id, state, architectures=None, jobs=1):
+def prepare(config, image_id, state, architectures=None, jobs=1, require_inventory=True):
     """Resolve mounts and reject collisions before creating build state."""
     source = (ROOT / config['source_dir']).resolve()
     requested_build = ROOT / config['build_dir']
@@ -35,7 +36,7 @@ def prepare(config, image_id, state, architectures=None, jobs=1):
             not re.fullmatch(r'[1-9]\d{1,2}-real', arch) for arch in architectures)):
         raise ValueError('Use explicit architectures such as 120-real.')
     inventory = (ROOT / config['inventory']).resolve()
-    if architectures is None and not inventory.is_file():
+    if require_inventory and architectures is None and not inventory.is_file():
         raise ValueError('Measured inventory is missing. Supply --architectures for a build-only run.')
     marker = build / '.cuvs-docker-build.json'
     identity = {'source_dir': str(source), 'container_source_dir': '/src',
@@ -66,7 +67,7 @@ def prepare(config, image_id, state, architectures=None, jobs=1):
     return source, build, cache, translated
 
 
-def main():
+def launch():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=ROOT / 'config/build.json')
     parser.add_argument('--image', default='cuvs-build:cuda12.9-gcc14')
@@ -112,6 +113,17 @@ def main():
         docker(['logs', '--follow', name])
         code = int(docker(['wait', name], capture_output=True).stdout.strip())
         raise SystemExit(code)
+
+
+def main():
+    state = ROOT / '.state'
+    state.mkdir(exist_ok=True)
+    with (state / 'docker-workflow.lock').open('w') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Another Docker workflow step is running; wait for it to finish')
+        launch()
 
 
 if __name__ == '__main__':

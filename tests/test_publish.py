@@ -22,7 +22,7 @@ spec.loader.exec_module(workflow)
 
 @unittest.skipUnless(shutil.which('rsync'), 'rsync is required for release reuse checks')
 class PublishReuseTests(unittest.TestCase):
-    def check_reuse(self, retry):
+    def check_reuse(self, retry, use_cache=False):
         with tempfile.TemporaryDirectory(prefix='cuvs-publish-test-') as temporary:
             root = Path(temporary)
             previous_release = '20261031T110000000000Z'
@@ -32,6 +32,8 @@ class PublishReuseTests(unittest.TestCase):
                 'remote_root': str(root / 'remote/cuvs-build'),
                 'toolchain': {'glibc_baseline': '2.28', 'minimum_driver': '575.57.08'},
             }
+            if use_cache:
+                config['library_cache'] = {'mount': str(root), 'path': str(root / 'volume/cache')}
             inventory = {
                 'schema_version': 1, 'system': 'Linux', 'machine': 'x86_64',
                 'glibc': {'output': 'glibc 2.39'},
@@ -75,6 +77,8 @@ class PublishReuseTests(unittest.TestCase):
             }
             (bundle / 'manifest.json').write_text(json.dumps(manifest))
 
+            library_uploads = []
+
             def local_transfer(args, **kwargs):
                 command = list(map(str, args))
                 self.assertEqual(command[0], 'rsync')
@@ -82,6 +86,8 @@ class PublishReuseTests(unittest.TestCase):
                 del command[index:index + 2]
                 self.assertTrue(command[-1].startswith('unused-host:'))
                 command[-1] = command[-1].removeprefix('unused-host:')
+                if Path(command[-2].rstrip('/')).name.startswith('library-upload-'):
+                    library_uploads.append(sum(path.stat().st_size for path in Path(command[-2]).iterdir()))
                 return subprocess.run(command, check=True, capture_output=True, text=True)
 
             def local_remote(args, **kwargs):
@@ -90,6 +96,10 @@ class PublishReuseTests(unittest.TestCase):
                 elif args[:2] == ['python3', '-c']:
                     # Run the production SHA-256 verification against the actual transfer.
                     return subprocess.run(args, check=True, capture_output=True, text=True)
+                elif args[:2] == ['python3', '-']:
+                    # Test directories stand in for a mounted network volume.
+                    script = 'import os\nos.path.ismount = lambda path: True\n' + kwargs['input']
+                    return subprocess.run(args, input=script, check=True, capture_output=True, text=True)
                 elif args[0] == 'bash' and args[-1] == 'probe':
                     return subprocess.CompletedProcess(args, 0)
                 else:
@@ -106,6 +116,13 @@ class PublishReuseTests(unittest.TestCase):
                         mock.patch.object(workflow, 'run', side_effect=local_transfer), \
                         contextlib.redirect_stdout(io.StringIO()):
                     flow.publish()
+                    if use_cache:
+                        self.assertEqual(library_uploads, [len(new_bytes)])
+                        # A new pod/client can reuse the volume with no previous release or local stamp.
+                        shutil.rmtree(destination)
+                        (flow.state / 'published-release').unlink()
+                        flow.publish()
+                        self.assertEqual(library_uploads, [len(new_bytes)])
                 self.assertEqual((flow.state / 'published-release').read_text().strip(), release)
             for name in ('libfixture.so', 'libfixture.so.1'):
                 self.assertEqual((destination / 'lib' / name).read_bytes(), new_bytes)
@@ -122,6 +139,12 @@ class PublishReuseTests(unittest.TestCase):
 
     def test_retry_replaces_incorrect_hardlinks_without_mutating_previous_release(self):
         self.check_reuse(retry=True)
+
+    def test_cache_uploads_only_missing_objects_and_reuses_without_local_release_state(self):
+        self.check_reuse(retry=False, use_cache=True)
+
+    def test_cache_retry_replaces_stale_release_libraries(self):
+        self.check_reuse(retry=True, use_cache=True)
 
 
 if __name__ == '__main__':

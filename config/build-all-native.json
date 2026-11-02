@@ -10,6 +10,10 @@
     "known_hosts": ".state/known_hosts"
   },
   "remote_root": "/workspace/cuvs-build",
+  "library_cache": {
+    "mount": "/workspace",
+    "path": "/workspace/cuvs-library-cache"
+  },
   "toolchain": {
     "cuda": "12.9",
     "gcc_major": 14,
