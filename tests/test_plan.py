@@ -111,6 +111,31 @@ ConfigureTest(NAME MG_C_TEST PATH test.cpp)
         with self.assertRaisesRegex(ValueError, "cuvs/core/new.h"):
             planner.check_headers(self.source)
 
+    def test_quick_selection_preserves_filters_commands_compile_checks_and_exclusions(self):
+        selection = {"ORDINARY_TEST": "Suite.Example", "cuvs_c_headers": "*"}
+        plan = self.plan(selection=selection, enable_mg=False, enable_mnmg=False)
+        by_name = {entry["name"]: entry for entry in plan["tests"]}
+        self.assertEqual(set(by_name), set(selection))
+        self.assertEqual(by_name["ORDINARY_TEST"]["gtest_filter"], "Suite.Example")
+        self.assertEqual(by_name["cuvs_c_headers"]["command"], ["bin/cuvs_c_headers"])
+        self.assertEqual(plan["build_only"][0]["name"], "cuvs_c_neighbors_test")
+        self.assertEqual(set(plan["build_targets"]), set(selection) | {"cuvs_c_neighbors_test"})
+        reported = [entry["name"] for key in ("tests", "excluded", "build_only") for entry in plan[key]]
+        self.assertCountEqual(reported, [entry["name"] for entry in planner.discover_tests(self.source)])
+        self.assertTrue(all(entry["reason"] for entry in plan["excluded"]))
+        configured = {"tests": [{"name": name} for name in plan["build_targets"]]}
+        self.assertTrue(self.plan(selection=selection, ctest_json=configured)["configured_tests_validated"])
+        with self.assertRaisesRegex(ValueError, "ORDINARY_TEST"):
+            self.plan(selection=selection, ctest_json={"tests": []})
+
+    def test_invalid_quick_selection_fails_before_building_or_silently_omitting_tests(self):
+        for selection in ({}, [], {"MISSING_TEST": "*"}, {"ORDINARY_TEST": ""},
+                          {"ORDINARY_TEST": None}, {"cuvs_c_neighbors_test": "*"}):
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                self.plan(selection=selection)
+        with self.assertRaisesRegex(ValueError, "disabled"):
+            self.plan(selection={"NEIGHBORS_MG_TEST": "*"}, enable_mg=False, enable_mnmg=False)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,52 @@
+{
+  "source_dir": "${CUVS_SOURCE_DIR}",
+  "build_dir": "${CUVS_SOURCE_DIR}/cpp/build-runpod",
+  "env_prefix": "${CUVS_SOURCE_DIR}/.conda-env",
+  "cpm_cache": "${CUVS_SOURCE_DIR}/.cache/cpm",
+  "inventory": "config/runpod.json",
+  "ssh": {
+    "config": "runpod.ssh",
+    "host": "runpod-cuda",
+    "known_hosts": ".state/known_hosts"
+  },
+  "remote_root": "/workspace/cuvs-build",
+  "toolchain": {
+    "cuda": "12.9",
+    "gcc_major": 14,
+    "glibc_baseline": "2.28",
+    "minimum_driver": "575.57.08",
+    "cpu_arch": "x86-64",
+    "cpu_tune": "generic"
+  },
+  "build_type": "Release",
+  "jobs": 4,
+  "targets": [
+    "cuvs",
+    "cuvs_c",
+    "CUVS_BRUTE_FORCE_ANN_BENCH"
+  ],
+  "benchmark_target": "CUVS_BRUTE_FORCE_ANN_BENCH",
+  "cmake": {
+    "BUILD_SHARED_LIBS": "ON",
+    "BUILD_C_LIBRARY": "ON",
+    "BUILD_TESTS": "ON",
+    "BUILD_C_TESTS": "ON",
+    "BUILD_CUVS_BENCH": "ON",
+    "BUILD_MG_ALGOS": "ON",
+    "BUILD_MNMG_TESTS": "ON",
+    "BUILD_CAGRA_HNSWLIB": "ON",
+    "CUVS_COMPILE_DYNAMIC_ONLY": "ON",
+    "CUVS_NVTX": "OFF",
+    "CUVS_ANN_BENCH_USE_CUVS_BRUTE_FORCE": "ON"
+  },
+  "tests": {
+    "profile": "all-native",
+    "cpu_threads": 4,
+    "timeout_seconds": 7200
+  },
+  "test_dependencies": [
+    "nccl",
+    "libucxx",
+    "ucx"
+  ]
+}

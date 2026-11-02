@@ -230,6 +230,24 @@ class NativeBuildHeaderTests(unittest.TestCase):
             "name": "cuvs_c_neighbors_test", "reason": "Compile-only check", "status": "passed",
         }])
 
+    def test_quick_profile_uses_native_build_and_check_reporting(self):
+        self.flow.config['tests']['profile'] = 'quick-native'
+        self.flow.build()
+        result = json.loads((self.flow.state / 'test-plan.json').read_text())
+        self.assertEqual(result['local_check_results'][0]['status'], 'passed')
+        self.assertEqual(result['build_only'][0]['status'], 'passed')
+
+    def test_quick_profile_remote_dispatch_preserves_the_native_runner(self):
+        self.flow.config['tests'].update(profile='quick-native', timeout_seconds=120)
+        with mock.patch.object(self.flow, 'release', return_value='release'), \
+                mock.patch.object(self.flow, 'remote_root', return_value='/remote'), \
+                mock.patch.object(self.flow, 'remote') as remote:
+            self.flow.execute_remote('test')
+        self.assertEqual(remote.call_args.args[0], [
+            'python3', '/remote/releases/release/scripts/run_tests.py',
+            '/remote/releases/release', '--timeout', '120',
+        ])
+
     def test_build_fails_when_aggregate_header_omits_a_source_header(self):
         (self.headers / "missing.h").write_text("#pragma once\n")
 

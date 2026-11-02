@@ -141,20 +141,51 @@ class Workflow:
         info = json.loads(path.read_text())
         return info, validate_inventory(info, self.config)
 
+    def compilation_target(self):
+        """Allow explicit build-only SMs without fabricating remote inventory."""
+        if 'compile_architectures' not in self.config:
+            return self.target()
+        if platform.system() != 'Linux' or platform.machine() != 'x86_64':
+            raise ValueError('Explicit compilation requires an x86_64 Linux build host.')
+        architectures = self.config['compile_architectures']
+        if (not isinstance(architectures, list) or not architectures or
+                any(not isinstance(arch, str) or not re.fullmatch(r'[1-9]\d{1,2}-real', arch)
+                    for arch in architectures)):
+            raise ValueError('compile_architectures must contain explicit SMs, e.g. ["120-real"].')
+        return {}, sorted(set(architectures), key=lambda arch: int(arch.split('-')[0]))
+
+    def require_deployment_inventory(self):
+        """Build-only configurations still need real compatibility checks to ship."""
+        if 'compile_architectures' in self.config:
+            _, measured = self.target()
+            _, compiled = self.compilation_target()
+            if measured != compiled:
+                raise ValueError('Compiled GPU architectures differ from measured inventory; rebuild for the pod.')
+
     def conda(self):
         binary = shutil.which('conda')
         if not binary:
             raise ValueError('conda is required on PATH to create/activate the build environment.')
         return binary
 
-    def all_native_tests(self):
-        return self.config.get('tests', {}).get('profile') == 'all-native'
+    def planned_native_tests(self):
+        return self.config.get('tests', {}).get('profile') in ('all-native', 'quick-native')
 
     def native_plan(self, ctest_json=None):
-        info, _ = self.target()
+        info, _ = self.compilation_target()
+        selection = None
+        if self.config.get('tests', {}).get('profile') == 'quick-native':
+            selection = self.config['tests'].get('selection')
+            if not selection:
+                raise ValueError('quick-native requires a nonempty tests.selection')
         plan = create_plan(self.path('source_dir'), self.config['toolchain']['cuda'], info,
                            ctest_json, enable_mg=self.config['cmake'].get('BUILD_MG_ALGOS') == 'ON',
-                           enable_mnmg=self.config['cmake'].get('BUILD_MNMG_TESTS') == 'ON')
+                           enable_mnmg=self.config['cmake'].get('BUILD_MNMG_TESTS') == 'ON',
+                           selection=selection)
+        if 'compile_architectures' in self.config:
+            plan['compilation_architectures'] = self.compilation_target()[1]
+            plan['capability_notes'].append(
+                'Build-only architecture selection; remote GPU, driver, and runtime compatibility are not verified.')
         cpu_threads = self.config.get('tests', {}).get('cpu_threads')
         if cpu_threads is not None:
             if type(cpu_threads) is not int or cpu_threads < 1:
@@ -164,7 +195,7 @@ class Workflow:
 
     def build_targets(self):
         targets = self.config['targets'][:]
-        if self.all_native_tests():
+        if self.planned_native_tests():
             targets += self.native_plan()['build_targets']
         return list(dict.fromkeys(targets))
 
@@ -242,12 +273,15 @@ class Workflow:
         sysroots = list((prefix / 'conda-meta').glob('sysroot_linux-64-*.json'))
         if not sysroots or json.loads(sysroots[0].read_text())['version'] != tc['glibc_baseline']:
             raise ValueError('Installed glibc sysroot differs from toolchain.glibc_baseline.')
-        info, archs = self.target()
+        info, archs = self.compilation_target()
         supported = run([nvcc, '--list-gpu-code'], env=env, stdout=subprocess.PIPE, text=True).stdout.split()
         for arch in archs:
             if 'sm_' + arch.split('-')[0] not in supported:
                 raise ValueError(f'Toolkit cannot compile {arch}; select a supported CUDA toolkit.')
-        print(f"Compatible: {info['machine']}, glibc {info['glibc']['output']}, GPU {';'.join(archs)}")
+        if info:
+            print(f"Compatible: {info['machine']}, glibc {info['glibc']['output']}, GPU {';'.join(archs)}")
+        else:
+            print(f"Build-only target: Linux x86_64, GPU {';'.join(archs)}; deployment inventory pending.")
         (self.state / 'local-toolchain.json').write_text(json.dumps(versions, indent=2) + '\n')
         return env, archs
 
@@ -281,16 +315,16 @@ class Workflow:
         if forbidden:
             raise ValueError(f'Use the toolchain settings instead of overriding {sorted(forbidden)}')
         opts.update(self.config['cmake'])
-        if self.all_native_tests():
+        if self.planned_native_tests():
             for key, value in self.native_plan()['required_cmake'].items():
                 if opts.get(key) != value:
-                    raise ValueError(f'all-native profile requires {key}={value}')
+                    raise ValueError(f'Native test profile requires {key}={value}')
         cache = self.state / 'runpod-cache.cmake'
         cache.write_text('# Generated from config/build.json and measured RunPod inventory.\n' +
                          ''.join(f'set({k} [==[{v}]==] CACHE STRING "Managed by cuvs_build" FORCE)\n'
                                  for k, v in opts.items()))
         run([prefix / 'bin/cmake', '-S', source / 'cpp', '-B', build, '-G', 'Ninja', '-C', cache], env=env)
-        if self.all_native_tests():
+        if self.planned_native_tests():
             configured = json.loads(run([prefix / 'bin/ctest', '--test-dir', build, '--show-only=json-v1'],
                                         env=env, stdout=subprocess.PIPE, text=True).stdout)
             (self.state / 'test-plan.json').write_text(json.dumps(self.native_plan(configured), indent=2) + '\n')
@@ -298,8 +332,8 @@ class Workflow:
                                                                'architectures': archs}, indent=2))
 
     def fingerprint(self):
-        _, archs = self.target()
-        source_tests = self.native_plan()['source_sha256'] if self.all_native_tests() else None
+        _, archs = self.compilation_target()
+        source_tests = self.native_plan()['source_sha256'] if self.planned_native_tests() else None
         return hashlib.sha256(json.dumps([self.config, archs, source_tests], sort_keys=True).encode()).hexdigest()
 
     def require_configured(self):
@@ -314,7 +348,7 @@ class Workflow:
             self.configure()
         run([self.path('env_prefix') / 'bin/cmake', '--build', self.path('build_dir'),
              '--parallel', str(self.config['jobs']), '--target'] + self.build_targets(), env=self.build_environment())
-        if self.all_native_tests():
+        if self.planned_native_tests():
             configured = json.loads(run([self.path('env_prefix') / 'bin/ctest', '--test-dir',
                                          self.path('build_dir'), '--show-only=json-v1'],
                                         env=self.build_environment(), stdout=subprocess.PIPE, text=True).stdout)
@@ -345,6 +379,7 @@ class Workflow:
         (self.state / 'cuda-smoke.log').write_text(result.stdout)
 
     def package(self):
+        self.require_deployment_inventory()
         self.require_configured()
         release = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
         bundle = ROOT / 'artifacts' / release
@@ -353,7 +388,7 @@ class Workflow:
         args = [sys.executable, ROOT / 'scripts/bundle.py', '--build-dir', self.path('build_dir'),
              '--env-prefix', self.path('env_prefix'), '--output', bundle,
              '--config', resolved_config, '--inventory', self.path('inventory')]
-        if self.all_native_tests():
+        if self.planned_native_tests():
             args += ['--test-plan', self.state / 'test-plan.json']
         run(args + ['--targets'] + self.build_targets(), env=self.build_environment())
         (self.state / 'latest-bundle').write_text(release + '\n')
@@ -374,6 +409,7 @@ class Workflow:
         return release
 
     def publish(self):
+        self.require_deployment_inventory()
         release = self.release('latest-bundle')
         bundle = ROOT / 'artifacts' / release
         bundled_config = json.loads((bundle / 'build-config.json').read_text())
@@ -425,7 +461,7 @@ print(f"Verified {len(manifest['files'])} bundled files")
         destination = f'{self.remote_root()}/releases/{release}'
         args = ['bash', destination + '/scripts/remote-run.sh', destination, mode]
         if mode == 'test':
-            if self.all_native_tests():
+            if self.planned_native_tests():
                 args = ['python3', destination + '/scripts/run_tests.py', destination,
                         '--timeout', str(self.config['tests'].get('timeout_seconds', 7200))]
             else:

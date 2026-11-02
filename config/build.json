@@ -19,7 +19,7 @@
     "cpu_tune": "generic"
   },
   "build_type": "Release",
-  "jobs": 4,
+  "jobs": 6,
   "targets": [
     "cuvs",
     "cuvs_c",
@@ -33,16 +33,27 @@
     "BUILD_C_TESTS": "ON",
     "BUILD_CUVS_BENCH": "ON",
     "BUILD_MG_ALGOS": "ON",
-    "BUILD_MNMG_TESTS": "ON",
+    "BUILD_MNMG_TESTS": "OFF",
     "BUILD_CAGRA_HNSWLIB": "ON",
     "CUVS_COMPILE_DYNAMIC_ONLY": "ON",
     "CUVS_NVTX": "OFF",
     "CUVS_ANN_BENCH_USE_CUVS_BRUTE_FORCE": "ON"
   },
   "tests": {
-    "profile": "all-native",
-    "cpu_threads": 4,
-    "timeout_seconds": 7200
+    "profile": "quick-native",
+    "cpu_threads": 3,
+    "timeout_seconds": 120,
+    "selection": {
+      "UTIL_TEST": "*",
+      "NEIGHBORS_ANN_BRUTE_FORCE_TEST": "*.AnnBruteForce/0",
+      "DATASET_C_TEST": "*",
+      "DISTANCE_C_TEST": "*",
+      "BRUTEFORCE_C_TEST": "BruteForceC.BuildSearch",
+      "IVF_FLAT_C_TEST": "*",
+      "CAGRA_C_TEST": "CagraC.BuildSearch:CagraC.BuildSearchFiltered:CagraC.DatasetContractFailures",
+      "cuvs_c_headers": "*",
+      "cuvs_c_test": "*"
+    }
   },
   "test_dependencies": [
     "nccl",

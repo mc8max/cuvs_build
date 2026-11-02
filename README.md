@@ -24,6 +24,22 @@ flowchart LR
 
 A local GPU is not required. RunPod executes the programs compiled locally.
 
+On macOS, set `CUVS_SOURCE_DIR` in `.env` and build with Docker:
+
+```sh
+make docker-build DOCKER_DETACH=1
+```
+
+The build uses saved GPU inventory and can run while the pod is stopped.
+Without inventory, specify the GPU architecture, such as
+`DOCKER_ARCHITECTURES=120-real` for Blackwell.
+
+The default configuration selects quick smoke tests. Add
+`CONFIG=config/build-all-native.json` for the full test profile.
+See the [Docker workflow](docker/README.md) for setup, logs, and build options.
+The commands below use native Linux; Docker publishing and cycle integration
+remain separate follow-up work.
+
 ## Setup
 
 Both machines must run Linux x86_64. Locally, you need Python 3, Conda, Make,
@@ -72,6 +88,7 @@ To run individual steps:
 | Command | What it does |
 | --- | --- |
 | `make build` | Compile the selected libraries, tests, and benchmark locally. |
+| `make docker-build` | Compile the selected targets in Linux Docker. |
 | `make publish` | Build, package, and upload a new release to RunPod. |
 | `make test` | Run native C++ and C API tests from the last published release. |
 | `make benchmark` | Run the small benchmark from the last published release. |

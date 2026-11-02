@@ -98,7 +98,8 @@ def check_headers(source_dir):
     return {"name": "cuvs_c_verify_install_headers", "status": "passed", "headers_checked": len(headers)}
 
 
-def create_plan(source_dir, cuda_version, inventory, ctest_json=None, *, enable_mg=True, enable_mnmg=True):
+def create_plan(source_dir, cuda_version, inventory, ctest_json=None, *, enable_mg=True, enable_mnmg=True,
+                selection=None):
     source = Path(source_dir).resolve()
     match = re.fullmatch(r"(\d+)\.(\d+)(?:\.\d+)?", str(cuda_version))
     if not match:
@@ -138,26 +139,50 @@ def create_plan(source_dir, cuda_version, inventory, ctest_json=None, *, enable_
             for path in ("cpp/tests/CMakeLists.txt", "c/tests/CMakeLists.txt")
         },
     }
-    if cuda < (13, 0):
+    if cuda < (13, 0) and (selection is None or "CUTILE_SMOKE_TEST" in selection):
         plan["capability_notes"].append(
             f"CUDA {cuda_version} cannot build cuTile kernels (CUDA 13.0+ required). "
             "CUTILE_SMOKE_TEST remains selected so its upstream DisabledBuild runtime skip is recorded."
         )
-    for entry in discover_tests(source):
+    discovered = discover_tests(source)
+    if selection is not None:
+        if (not isinstance(selection, dict) or not selection or
+                any(not isinstance(value, str) or not value.strip() for value in selection.values())):
+            raise ValueError("selection must map test target names to nonempty GoogleTest filters")
+        unknown = set(selection) - {entry["name"] for entry in discovered}
+        if unknown:
+            raise ValueError("Unknown selected test targets: " + ", ".join(sorted(unknown)))
+        plan["scope"] = "Quick native C++ and C API smoke tests; partial coverage"
+        plan["selection"] = selection
+        plan["notes"] = [
+            "Run selected executables sequentially with explicit GoogleTest filters.",
+            "This smoke profile omits exhaustive parameter sweeps, large-memory tests, and distributed tests.",
+            "Runtime skips and empty filters are reported by the native runner; they do not count as passing cases.",
+        ]
+    for entry in discovered:
         name = entry["name"]
         reason = None
         if name in MNMG_TARGETS and not enable_mnmg:
             reason = "Requires BUILD_MNMG_TESTS=ON, BUILD_MG_ALGOS=ON, and NCCL/UCX/UCXX; this profile does not enable the distributed toolchain."
         elif name in MG_TARGETS and not enable_mg:
             reason = "Requires BUILD_MG_ALGOS=ON and NCCL; this profile does not enable the multi-GPU toolchain."
+        elif selection is not None and name not in selection and name not in COMPILE_ONLY:
+            reason = "Not selected for the quick native smoke profile; use all-native for full coverage."
         if reason:
             plan["excluded"].append({"name": name, "reason": reason, "suite": entry["suite"]})
         elif name in COMPILE_ONLY:
             plan["build_only"].append({**entry, "reason": COMPILE_ONLY[name]})
             plan["build_targets"].append(name)
         else:
+            if selection is not None and entry["kind"] == "gtest":
+                entry["gtest_filter"] = selection[name]
             plan["tests"].append(entry)
             plan["build_targets"].append(name)
+    unavailable = set(selection or {}) & {entry["name"] for entry in plan["excluded"]}
+    if unavailable:
+        raise ValueError("Selected tests are disabled by the build configuration: " + ", ".join(sorted(unavailable)))
+    if not plan["tests"]:
+        raise ValueError("Test selection contains no runnable targets")
     if ctest_json is not None:
         configured = {test["name"] for test in ctest_json.get("tests", [])}
         required = {entry["name"] for entry in plan["tests"] + plan["build_only"]}
